@@ -50,5 +50,4 @@ fi
 echo ""
 echo "SUCCESS! Your Task Management API is ready!"
 echo "=========================================="
-echo "API URL: http://localhost:8000/api"
 echo "Health Check: http://localhost:8000/api/health"
