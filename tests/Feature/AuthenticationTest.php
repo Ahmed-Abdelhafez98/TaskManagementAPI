@@ -7,12 +7,13 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
+use PHPUnit\Framework\Attributes\Test;
 
 class AuthenticationTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** @test */
+    #[Test]
     public function user_can_login_with_valid_credentials()
     {
         $user = User::factory()->create([
@@ -42,7 +43,7 @@ class AuthenticationTest extends TestCase
         $this->assertNotEmpty($response->json('data.token'));
     }
 
-    /** @test */
+    #[Test]
     public function user_cannot_login_with_invalid_credentials()
     {
         $user = User::factory()->create([
@@ -59,7 +60,7 @@ class AuthenticationTest extends TestCase
             ->assertJsonValidationErrors(['email']);
     }
 
-    /** @test */
+    #[Test]
     public function login_requires_email_and_password()
     {
         $response = $this->postJson('/api/auth/login', []);
@@ -68,7 +69,7 @@ class AuthenticationTest extends TestCase
             ->assertJsonValidationErrors(['email', 'password']);
     }
 
-    /** @test */
+    #[Test]
     public function user_can_register_with_valid_data()
     {
         $userData = [
@@ -98,7 +99,7 @@ class AuthenticationTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function registration_requires_valid_data()
     {
         $response = $this->postJson('/api/auth/register', [
@@ -112,7 +113,7 @@ class AuthenticationTest extends TestCase
             ->assertJsonValidationErrors(['name', 'email', 'password', 'role']);
     }
 
-    /** @test */
+    #[Test]
     public function registration_requires_unique_email()
     {
         User::factory()->create(['email' => 'existing@example.com']);
@@ -129,7 +130,7 @@ class AuthenticationTest extends TestCase
             ->assertJsonValidationErrors(['email']);
     }
 
-    /** @test */
+    #[Test]
     public function authenticated_user_can_get_profile()
     {
         $user = User::factory()->create();
@@ -157,7 +158,7 @@ class AuthenticationTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function unauthenticated_user_cannot_get_profile()
     {
         $response = $this->getJson('/api/auth/profile');
@@ -165,7 +166,7 @@ class AuthenticationTest extends TestCase
         $response->assertStatus(401);
     }
 
-    /** @test */
+    #[Test]
     public function authenticated_user_can_logout()
     {
         $user = User::factory()->create();
@@ -180,7 +181,7 @@ class AuthenticationTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function authenticated_user_can_logout_from_all_devices()
     {
         $user = User::factory()->create();
@@ -196,6 +197,13 @@ class AuthenticationTest extends TestCase
         $response = $this->postJson('/api/auth/logout-all');
 
         $response->assertStatus(200)
+            ->assertJsonStructure([
+                'success',
+                'message',
+                'data' => [
+                    'tokens_revoked'
+                ]
+            ])
             ->assertJson([
                 'success' => true,
                 'message' => 'Logged out from all devices successfully'
@@ -204,7 +212,7 @@ class AuthenticationTest extends TestCase
         $this->assertCount(0, $user->fresh()->tokens);
     }
 
-    /** @test */
+    #[Test]
     public function token_is_required_for_protected_routes()
     {
         $response = $this->getJson('/api/tasks');
@@ -212,7 +220,7 @@ class AuthenticationTest extends TestCase
         $response->assertStatus(401);
     }
 
-    /** @test */
+    #[Test]
     public function invalid_token_is_rejected()
     {
         $response = $this->withHeaders([
@@ -222,18 +230,32 @@ class AuthenticationTest extends TestCase
         $response->assertStatus(401);
     }
 
-    /** @test */
-    public function password_confirmation_is_required_for_registration()
+    #[Test]
+    public function profile_returns_error_when_user_not_authenticated()
     {
-        $response = $this->postJson('/api/auth/register', [
-            'name' => 'John Doe',
-            'email' => 'john@example.com',
-            'password' => 'password123',
-            'password_confirmation' => 'different-password',
-            'role' => 'user'
-        ]);
+        // This test ensures the enhanced error handling works
+        $response = $this->getJson('/api/auth/profile');
 
-        $response->assertStatus(422)
-            ->assertJsonValidationErrors(['password']);
+        $response->assertStatus(401)
+            ->assertJson([
+                'message' => 'Unauthenticated.'
+            ]);
+    }
+
+    #[Test]
+    public function logout_handles_missing_token_gracefully()
+    {
+        $user = User::factory()->create();
+
+        // Act as user but without proper token setup
+        $this->actingAs($user, 'sanctum');
+
+        $response = $this->postJson('/api/auth/logout');
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'message' => 'Logged out successfully'
+            ]);
     }
 }

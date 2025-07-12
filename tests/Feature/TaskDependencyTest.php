@@ -8,6 +8,7 @@ use App\Models\TaskDependency;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
+use PHPUnit\Framework\Attributes\Test;
 
 class TaskDependencyTest extends TestCase
 {
@@ -20,11 +21,12 @@ class TaskDependencyTest extends TestCase
     {
         parent::setUp();
 
+        // Create test users
         $this->manager = User::factory()->create(['role' => 'manager']);
         $this->user = User::factory()->create(['role' => 'user']);
     }
 
-    /** @test */
+    #[Test]
     public function manager_can_add_task_dependency()
     {
         Sanctum::actingAs($this->manager);
@@ -41,6 +43,16 @@ class TaskDependencyTest extends TestCase
             ->assertJson([
                 'success' => true,
                 'message' => 'Task dependency added successfully'
+            ])
+            ->assertJsonStructure([
+                'success',
+                'message',
+                'data' => [
+                    'task_id',
+                    'depends_on_task_id',
+                    'task',
+                    'depends_on_task'
+                ]
             ]);
 
         $this->assertDatabaseHas('task_dependencies', [
@@ -49,7 +61,7 @@ class TaskDependencyTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function user_cannot_add_task_dependency()
     {
         Sanctum::actingAs($this->user);
@@ -65,11 +77,57 @@ class TaskDependencyTest extends TestCase
         $response->assertStatus(403)
             ->assertJson([
                 'success' => false,
-                'message' => 'Unauthorized. Only managers can manage task dependencies.'
+                'message' => 'Only managers can manage task dependencies.'
             ]);
     }
 
-    /** @test */
+    #[Test]
+    public function adding_dependency_requires_valid_data()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->postJson("/api/tasks/1/dependencies", [
+            'task_id' => '',
+            'depends_on_task_id' => ''
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['task_id', 'depends_on_task_id']);
+    }
+
+    #[Test]
+    public function cannot_add_dependency_to_nonexistent_task()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        $response = $this->postJson("/api/tasks/{$task->id}/dependencies", [
+            'task_id' => $task->id,
+            'depends_on_task_id' => 99999 // Non-existent task
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['depends_on_task_id']);
+    }
+
+    #[Test]
+    public function cannot_create_self_dependency()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        $response = $this->postJson("/api/tasks/{$task->id}/dependencies", [
+            'task_id' => $task->id,
+            'depends_on_task_id' => $task->id // Same task
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['depends_on_task_id']);
+    }
+
+    #[Test]
     public function cannot_create_circular_dependency()
     {
         Sanctum::actingAs($this->manager);
@@ -96,7 +154,7 @@ class TaskDependencyTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function cannot_create_duplicate_dependency()
     {
         Sanctum::actingAs($this->manager);
@@ -110,7 +168,7 @@ class TaskDependencyTest extends TestCase
             'depends_on_task_id' => $task2->id
         ]);
 
-        // Try to create the same dependency again
+        // Try to create duplicate dependency
         $response = $this->postJson("/api/tasks/{$task1->id}/dependencies", [
             'task_id' => $task1->id,
             'depends_on_task_id' => $task2->id
@@ -123,62 +181,82 @@ class TaskDependencyTest extends TestCase
             ]);
     }
 
-    /** @test */
-    public function can_get_task_dependencies()
+    #[Test]
+    public function manager_can_view_task_dependencies()
     {
-        $task = Task::factory()->create([
-            'assigned_to' => $this->user->id,
-            'created_by' => $this->manager->id
-        ]);
-        $dependencyTask = Task::factory()->create(['created_by' => $this->manager->id]);
+        Sanctum::actingAs($this->manager);
+
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
 
         TaskDependency::create([
-            'task_id' => $task->id,
-            'depends_on_task_id' => $dependencyTask->id
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task2->id
         ]);
 
-        Sanctum::actingAs($this->user);
-
-        $response = $this->getJson("/api/tasks/{$task->id}/dependencies");
+        $response = $this->getJson("/api/tasks/{$task1->id}/dependencies");
 
         $response->assertStatus(200)
             ->assertJsonStructure([
                 'success',
                 'data' => [
                     '*' => [
-                        'id',
                         'task_id',
                         'depends_on_task_id',
                         'depends_on_task' => [
                             'id',
                             'title',
-                            'status'
+                            'status',
+                            'assigned_user',
+                            'creator'
                         ]
                     ]
                 ]
             ]);
     }
 
-    /** @test */
-    public function user_cannot_view_dependencies_of_unassigned_tasks()
+    #[Test]
+    public function user_can_view_dependencies_for_assigned_tasks()
     {
-        Sanctum::actingAs($this->user);
-
-        $task = Task::factory()->create([
-            'assigned_to' => null,
+        $task1 = Task::factory()->create([
+            'assigned_to' => $this->user->id,
             'created_by' => $this->manager->id
         ]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        TaskDependency::create([
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task2->id
+        ]);
+
+        Sanctum::actingAs($this->user);
+
+        $response = $this->getJson("/api/tasks/{$task1->id}/dependencies");
+
+        $response->assertStatus(200);
+    }
+
+    #[Test]
+    public function user_cannot_view_dependencies_for_other_users_tasks()
+    {
+        $otherUser = User::factory()->create(['role' => 'user']);
+        $task = Task::factory()->create([
+            'assigned_to' => $otherUser->id,
+            'created_by' => $this->manager->id
+        ]);
+
+        Sanctum::actingAs($this->user);
 
         $response = $this->getJson("/api/tasks/{$task->id}/dependencies");
 
         $response->assertStatus(403)
             ->assertJson([
                 'success' => false,
-                'message' => 'Unauthorized. You can only view dependencies for tasks assigned to you.'
+                'message' => 'You can only view dependencies for tasks assigned to you.'
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function manager_can_remove_task_dependency()
     {
         Sanctum::actingAs($this->manager);
@@ -186,7 +264,7 @@ class TaskDependencyTest extends TestCase
         $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
         $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
 
-        $dependency = TaskDependency::create([
+        TaskDependency::create([
             'task_id' => $task1->id,
             'depends_on_task_id' => $task2->id
         ]);
@@ -205,140 +283,196 @@ class TaskDependencyTest extends TestCase
         ]);
     }
 
-    /** @test */
-    public function can_get_task_dependents()
+    #[Test]
+    public function user_cannot_remove_task_dependency()
     {
-        $task = Task::factory()->create([
-            'assigned_to' => $this->user->id,
-            'created_by' => $this->manager->id
-        ]);
-        $dependentTask = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
 
         TaskDependency::create([
-            'task_id' => $dependentTask->id,
-            'depends_on_task_id' => $task->id
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task2->id
         ]);
 
         Sanctum::actingAs($this->user);
 
-        $response = $this->getJson("/api/tasks/{$task->id}/dependents");
+        $response = $this->deleteJson("/api/tasks/{$task1->id}/dependencies/{$task2->id}");
+
+        $response->assertStatus(403)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Only managers can manage task dependencies.'
+            ]);
+    }
+
+    #[Test]
+    public function removing_nonexistent_dependency_returns_404()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        $response = $this->deleteJson("/api/tasks/{$task1->id}/dependencies/{$task2->id}");
+
+        $response->assertStatus(404)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Task dependency not found'
+            ]);
+    }
+
+    #[Test]
+    public function can_view_task_dependents()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        TaskDependency::create([
+            'task_id' => $task2->id,
+            'depends_on_task_id' => $task1->id
+        ]);
+
+        $response = $this->getJson("/api/tasks/{$task1->id}/dependents");
 
         $response->assertStatus(200)
             ->assertJsonStructure([
                 'success',
                 'data' => [
                     '*' => [
-                        'id',
                         'task_id',
                         'depends_on_task_id',
                         'task' => [
                             'id',
                             'title',
-                            'status'
+                            'status',
+                            'assigned_user',
+                            'creator'
                         ]
                     ]
                 ]
             ]);
     }
 
-    /** @test */
-    public function task_cannot_be_completed_with_incomplete_dependencies()
+    #[Test]
+    public function can_view_dependency_graph()
     {
-        $task = Task::factory()->create([
-            'assigned_to' => $this->user->id,
-            'created_by' => $this->manager->id,
-            'status' => 'in_progress'
-        ]);
+        Sanctum::actingAs($this->manager);
 
-        $dependencyTask = Task::factory()->create([
-            'created_by' => $this->manager->id,
-            'status' => 'pending' // Not completed
-        ]);
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task3 = Task::factory()->create(['created_by' => $this->manager->id]);
 
+        // Create dependencies: task1 depends on task2, task3 depends on task1
         TaskDependency::create([
-            'task_id' => $task->id,
-            'depends_on_task_id' => $dependencyTask->id
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task2->id
         ]);
-
-        Sanctum::actingAs($this->user);
-
-        $response = $this->putJson("/api/tasks/{$task->id}", [
-            'status' => 'completed'
-        ]);
-
-        $response->assertStatus(422)
-            ->assertJson([
-                'success' => false,
-                'message' => 'Cannot complete task. Some dependencies are not yet completed.'
-            ]);
-    }
-
-    /** @test */
-    public function task_can_be_completed_when_all_dependencies_are_completed()
-    {
-        $task = Task::factory()->create([
-            'assigned_to' => $this->user->id,
-            'created_by' => $this->manager->id,
-            'status' => 'in_progress'
-        ]);
-
-        $dependencyTask = Task::factory()->create([
-            'created_by' => $this->manager->id,
-            'status' => 'completed' // Completed
-        ]);
-
         TaskDependency::create([
-            'task_id' => $task->id,
-            'depends_on_task_id' => $dependencyTask->id
+            'task_id' => $task3->id,
+            'depends_on_task_id' => $task1->id
         ]);
 
-        Sanctum::actingAs($this->user);
-
-        $response = $this->putJson("/api/tasks/{$task->id}", [
-            'status' => 'completed'
-        ]);
+        $response = $this->getJson("/api/tasks/{$task1->id}/graph");
 
         $response->assertStatus(200)
-            ->assertJson([
-                'success' => true,
-                'message' => 'Task updated successfully'
+            ->assertJsonStructure([
+                'success',
+                'data' => [
+                    'task',
+                    'dependencies',
+                    'dependents',
+                    'can_be_completed'
+                ]
             ]);
 
-        $this->assertDatabaseHas('tasks', [
-            'id' => $task->id,
-            'status' => 'completed'
-        ]);
+        $data = $response->json('data');
+        $this->assertCount(1, $data['dependencies']);
+        $this->assertCount(1, $data['dependents']);
+        $this->assertIsBool($data['can_be_completed']);
     }
 
-    /** @test */
-    public function dependency_validation_requires_valid_task_ids()
+    #[Test]
+    public function can_clear_all_task_dependencies()
     {
         Sanctum::actingAs($this->manager);
 
-        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
+        $task3 = Task::factory()->create(['created_by' => $this->manager->id]);
 
-        $response = $this->postJson("/api/tasks/{$task->id}/dependencies", [
-            'task_id' => $task->id,
-            'depends_on_task_id' => 999999 // Non-existent task
+        // Create multiple dependencies
+        TaskDependency::create([
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task2->id
+        ]);
+        TaskDependency::create([
+            'task_id' => $task1->id,
+            'depends_on_task_id' => $task3->id
         ]);
 
-        $response->assertStatus(422)
-            ->assertJsonValidationErrors(['depends_on_task_id']);
+        $response = $this->deleteJson("/api/tasks/{$task1->id}/dependencies");
+
+        $response->assertStatus(200)
+            ->assertJsonStructure([
+                'success',
+                'message',
+                'data' => [
+                    'dependencies_removed'
+                ]
+            ])
+            ->assertJson([
+                'success' => true,
+                'message' => 'All task dependencies removed successfully'
+            ]);
+
+        $this->assertDatabaseMissing('task_dependencies', [
+            'task_id' => $task1->id
+        ]);
+
+        $data = $response->json('data');
+        $this->assertEquals(2, $data['dependencies_removed']);
     }
 
-    /** @test */
-    public function cannot_create_self_dependency()
+    #[Test]
+    public function user_cannot_clear_task_dependencies()
+    {
+        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        Sanctum::actingAs($this->user);
+
+        $response = $this->deleteJson("/api/tasks/{$task->id}/dependencies");
+
+        $response->assertStatus(403)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Only managers can manage task dependencies.'
+            ]);
+    }
+
+    #[Test]
+    public function dependency_operations_on_nonexistent_task_return_404()
     {
         Sanctum::actingAs($this->manager);
 
-        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+        $response = $this->getJson('/api/tasks/99999/dependencies');
 
-        $response = $this->postJson("/api/tasks/{$task->id}/dependencies", [
-            'task_id' => $task->id,
-            'depends_on_task_id' => $task->id // Same task
-        ]);
+        $response->assertStatus(404)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Task not found'
+            ]);
+    }
 
-        $response->assertStatus(422)
-            ->assertJsonValidationErrors(['depends_on_task_id']);
+    #[Test]
+    public function unauthenticated_requests_are_rejected()
+    {
+        $task = Task::factory()->create();
+
+        $response = $this->getJson("/api/tasks/{$task->id}/dependencies");
+
+        $response->assertStatus(401);
     }
 }

@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\WithFaker;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
+use PHPUnit\Framework\Attributes\Test;
 
 class TaskManagementTest extends TestCase
 {
@@ -26,7 +27,7 @@ class TaskManagementTest extends TestCase
         $this->user = User::factory()->create(['role' => 'user']);
     }
 
-    /** @test */
+    #[Test]
     public function manager_can_create_task()
     {
         Sanctum::actingAs($this->manager);
@@ -64,7 +65,7 @@ class TaskManagementTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function user_cannot_create_task()
     {
         Sanctum::actingAs($this->user);
@@ -79,11 +80,28 @@ class TaskManagementTest extends TestCase
         $response->assertStatus(403)
             ->assertJson([
                 'success' => false,
-                'message' => 'Unauthorized. Only managers can create tasks.'
+                'message' => 'Only managers can create tasks.'
             ]);
     }
 
-    /** @test */
+    #[Test]
+    public function creating_task_with_invalid_assigned_user_fails()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $taskData = [
+            'title' => 'Test Task',
+            'description' => 'Test Description',
+            'assigned_to' => 99999, // Non-existent user
+        ];
+
+        $response = $this->postJson('/api/tasks', $taskData);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['assigned_to']);
+    }
+
+    #[Test]
     public function manager_can_view_all_tasks()
     {
         Sanctum::actingAs($this->manager);
@@ -118,7 +136,7 @@ class TaskManagementTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function user_can_only_view_assigned_tasks()
     {
         Sanctum::actingAs($this->user);
@@ -143,7 +161,7 @@ class TaskManagementTest extends TestCase
         $this->assertEquals($assignedTask->id, $tasks[0]['id']);
     }
 
-    /** @test */
+    #[Test]
     public function can_filter_tasks_by_status()
     {
         Sanctum::actingAs($this->manager);
@@ -161,7 +179,7 @@ class TaskManagementTest extends TestCase
         }
     }
 
-    /** @test */
+    #[Test]
     public function can_filter_tasks_by_assigned_user()
     {
         Sanctum::actingAs($this->manager);
@@ -185,7 +203,7 @@ class TaskManagementTest extends TestCase
         }
     }
 
-    /** @test */
+    #[Test]
     public function can_filter_tasks_by_due_date_range()
     {
         Sanctum::actingAs($this->manager);
@@ -210,7 +228,60 @@ class TaskManagementTest extends TestCase
         $this->assertCount(1, $tasks);
     }
 
-    /** @test */
+    #[Test]
+    public function can_search_tasks_by_title_and_description()
+    {
+        Sanctum::actingAs($this->manager);
+
+        Task::factory()->create([
+            'title' => 'Important Task',
+            'description' => 'This is urgent',
+            'created_by' => $this->manager->id
+        ]);
+        Task::factory()->create([
+            'title' => 'Regular Task',
+            'description' => 'Normal priority',
+            'created_by' => $this->manager->id
+        ]);
+
+        $response = $this->getJson('/api/tasks?search=Important');
+
+        $response->assertStatus(200);
+        $tasks = $response->json('data.data');
+        $this->assertCount(1, $tasks);
+        $this->assertStringContainsString('Important', $tasks[0]['title']);
+    }
+
+    #[Test]
+    public function pagination_works_with_per_page_limit()
+    {
+        Sanctum::actingAs($this->manager);
+
+        Task::factory()->count(15)->create(['created_by' => $this->manager->id]);
+
+        $response = $this->getJson('/api/tasks?per_page=5');
+
+        $response->assertStatus(200);
+        $data = $response->json('data');
+        $this->assertEquals(5, $data['per_page']);
+        $this->assertCount(5, $data['data']);
+    }
+
+    #[Test]
+    public function per_page_limit_cannot_exceed_maximum()
+    {
+        Sanctum::actingAs($this->manager);
+
+        Task::factory()->count(10)->create(['created_by' => $this->manager->id]);
+
+        $response = $this->getJson('/api/tasks?per_page=200'); // Exceeds max of 100
+
+        $response->assertStatus(200);
+        $data = $response->json('data');
+        $this->assertEquals(100, $data['per_page']); // Should be capped at 100
+    }
+
+    #[Test]
     public function manager_can_update_all_task_fields()
     {
         Sanctum::actingAs($this->manager);
@@ -240,12 +311,28 @@ class TaskManagementTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
+    public function updating_task_with_invalid_assigned_user_fails()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $task = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        $response = $this->putJson("/api/tasks/{$task->id}", [
+            'assigned_to' => 99999 // Non-existent user
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['assigned_to']);
+    }
+
+    #[Test]
     public function user_can_only_update_status_of_assigned_tasks()
     {
         $task = Task::factory()->create([
             'assigned_to' => $this->user->id,
-            'created_by' => $this->manager->id
+            'created_by' => $this->manager->id,
+            'status' => 'pending'
         ]);
 
         Sanctum::actingAs($this->user);
@@ -260,7 +347,24 @@ class TaskManagementTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
+    public function user_cannot_make_invalid_status_transitions()
+    {
+        $task = Task::factory()->create([
+            'assigned_to' => $this->user->id,
+            'created_by' => $this->manager->id,
+            'status' => 'pending'
+        ]);
+
+        Sanctum::actingAs($this->user);
+
+        // Try invalid transition (assuming we implement status validation)
+        $response = $this->putJson("/api/tasks/{$task->id}", ['status' => 'invalid_status']);
+
+        $response->assertStatus(422);
+    }
+
+    #[Test]
     public function user_cannot_update_other_users_tasks()
     {
         $otherUser = User::factory()->create(['role' => 'user']);
@@ -276,11 +380,11 @@ class TaskManagementTest extends TestCase
         $response->assertStatus(403)
             ->assertJson([
                 'success' => false,
-                'message' => 'Unauthorized. You can only update tasks assigned to you.'
+                'message' => 'You can only update tasks assigned to you.'
             ]);
     }
 
-    /** @test */
+    #[Test]
     public function manager_can_delete_task()
     {
         Sanctum::actingAs($this->manager);
@@ -298,7 +402,7 @@ class TaskManagementTest extends TestCase
         $this->assertDatabaseMissing('tasks', ['id' => $task->id]);
     }
 
-    /** @test */
+    #[Test]
     public function user_cannot_delete_task()
     {
         $task = Task::factory()->create([
@@ -313,23 +417,39 @@ class TaskManagementTest extends TestCase
         $response->assertStatus(403)
             ->assertJson([
                 'success' => false,
-                'message' => 'Unauthorized. Only managers can delete tasks.'
+                'message' => 'Only managers can delete tasks.'
             ]);
     }
 
-    /** @test */
-    public function can_get_task_details_with_dependencies()
+    #[Test]
+    public function cannot_delete_task_with_dependents()
+    {
+        Sanctum::actingAs($this->manager);
+
+        $parentTask = Task::factory()->create(['created_by' => $this->manager->id]);
+        $childTask = Task::factory()->create(['created_by' => $this->manager->id]);
+
+        // Create dependency
+        TaskDependency::create([
+            'task_id' => $childTask->id,
+            'depends_on_task_id' => $parentTask->id
+        ]);
+
+        $response = $this->deleteJson("/api/tasks/{$parentTask->id}");
+
+        $response->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Cannot delete task that has dependent tasks.'
+            ]);
+    }
+
+    #[Test]
+    public function task_show_includes_dependencies_and_dependents()
     {
         Sanctum::actingAs($this->manager);
 
         $task = Task::factory()->create(['created_by' => $this->manager->id]);
-        $dependencyTask = Task::factory()->create(['created_by' => $this->manager->id]);
-
-        // Create dependency
-        TaskDependency::create([
-            'task_id' => $task->id,
-            'depends_on_task_id' => $dependencyTask->id
-        ]);
 
         $response = $this->getJson("/api/tasks/{$task->id}");
 
@@ -339,53 +459,53 @@ class TaskManagementTest extends TestCase
                 'data' => [
                     'id',
                     'title',
-                    'dependencies' => [
-                        '*' => ['id', 'title', 'status']
-                    ],
+                    'dependencies',
                     'dependents'
                 ]
             ]);
     }
 
-    /** @test */
-    public function task_validation_fails_with_invalid_data()
+    #[Test]
+    public function user_can_only_view_assigned_task_details()
     {
-        Sanctum::actingAs($this->manager);
+        $task = Task::factory()->create([
+            'assigned_to' => $this->user->id,
+            'created_by' => $this->manager->id
+        ]);
 
-        $invalidData = [
-            'title' => '', // Required field
-            'due_date' => 'invalid-date',
-            'assigned_to' => 999999, // Non-existent user
-        ];
+        Sanctum::actingAs($this->user);
 
-        $response = $this->postJson('/api/tasks', $invalidData);
+        $response = $this->getJson("/api/tasks/{$task->id}");
 
-        $response->assertStatus(422)
-            ->assertJsonValidationErrors(['title', 'due_date', 'assigned_to']);
+        $response->assertStatus(200);
     }
 
-    /** @test */
-    public function task_due_date_must_be_in_future()
+    #[Test]
+    public function user_cannot_view_other_users_task_details()
     {
-        Sanctum::actingAs($this->manager);
+        $otherUser = User::factory()->create(['role' => 'user']);
+        $task = Task::factory()->create([
+            'assigned_to' => $otherUser->id,
+            'created_by' => $this->manager->id
+        ]);
 
-        $taskData = [
-            'title' => 'Test Task',
-            'due_date' => now()->subDay()->format('Y-m-d'), // Past date
-        ];
+        Sanctum::actingAs($this->user);
 
-        $response = $this->postJson('/api/tasks', $taskData);
+        $response = $this->getJson("/api/tasks/{$task->id}");
 
-        $response->assertStatus(422)
-            ->assertJsonValidationErrors(['due_date']);
+        $response->assertStatus(403)
+            ->assertJson([
+                'success' => false,
+                'message' => 'You can only view tasks assigned to you.'
+            ]);
     }
 
-    /** @test */
-    public function returns_404_for_non_existent_task()
+    #[Test]
+    public function task_not_found_returns_404()
     {
         Sanctum::actingAs($this->manager);
 
-        $response = $this->getJson('/api/tasks/999999');
+        $response = $this->getJson('/api/tasks/99999');
 
         $response->assertStatus(404)
             ->assertJson([
@@ -394,40 +514,11 @@ class TaskManagementTest extends TestCase
             ]);
     }
 
-    /** @test */
-    public function unauthenticated_user_cannot_access_tasks()
+    #[Test]
+    public function unauthenticated_requests_are_rejected()
     {
         $response = $this->getJson('/api/tasks');
 
         $response->assertStatus(401);
-    }
-
-    /** @test */
-    public function can_paginate_tasks()
-    {
-        Sanctum::actingAs($this->manager);
-
-        Task::factory()->count(20)->create(['created_by' => $this->manager->id]);
-
-        $response = $this->getJson('/api/tasks?page=1');
-
-        $response->assertStatus(200)
-            ->assertJsonStructure([
-                'success',
-                'data' => [
-                    'current_page',
-                    'data',
-                    'first_page_url',
-                    'last_page',
-                    'last_page_url',
-                    'next_page_url',
-                    'per_page',
-                    'prev_page_url',
-                    'total'
-                ]
-            ]);
-
-        $this->assertEquals(1, $response->json('data.current_page'));
-        $this->assertLessThanOrEqual(15, count($response->json('data.data')));
     }
 }

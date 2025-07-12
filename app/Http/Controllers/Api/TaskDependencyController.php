@@ -2,165 +2,418 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Http\Controllers\Controller;
 use App\Models\Task;
 use App\Models\TaskDependency;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
-class TaskDependencyController extends Controller
+class TaskDependencyController extends BaseApiController
 {
     /**
      * Add a dependency to a task
+     *
+     * @param Request $request
+     * @return JsonResponse
      */
-    public function store(Request $request)
+    public function store(Request $request): JsonResponse
     {
-        $user = Auth::user();
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
 
-        // Only managers can manage task dependencies
-        if (!$user->isManager()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. Only managers can manage task dependencies.'
-            ], 403);
+            if (!$user->isManager()) {
+                return $this->forbiddenResponse('Only managers can manage task dependencies.');
+            }
+
+            // Validate request data first
+            try {
+                $validatedData = $this->validateDependencyRequest($request);
+            } catch (ValidationException $e) {
+                throw $e; // Re-throw validation exceptions to be handled properly
+            }
+
+            $taskId = $validatedData['task_id'];
+            $dependsOnTaskId = $validatedData['depends_on_task_id'];
+
+            // Validate dependency constraints
+            $validationResult = $this->validateDependencyConstraints($taskId, $dependsOnTaskId);
+            if ($validationResult instanceof JsonResponse) {
+                return $validationResult;
+            }
+
+            $dependency = DB::transaction(function () use ($taskId, $dependsOnTaskId) {
+                $dependency = TaskDependency::create([
+                    'task_id' => $taskId,
+                    'depends_on_task_id' => $dependsOnTaskId,
+                ]);
+
+                $dependency->load(['task', 'dependsOnTask']);
+                return $dependency;
+            });
+
+            Log::info('Task dependency added successfully', [
+                'task_id' => $taskId,
+                'depends_on_task_id' => $dependsOnTaskId,
+                'created_by' => $user->id
+            ]);
+
+            return $this->createdResponse($dependency, 'Task dependency added successfully');
+        } catch (ValidationException $e) {
+            // Let Laravel handle validation exceptions properly
+            throw $e;
+        } catch (Throwable $e) {
+            Log::error('Failed to add task dependency', [
+                'error' => $e->getMessage(),
+                'user_id' => $user->id ?? null,
+                'request_data' => $request->all()
+            ]);
+            return $this->serverErrorResponse('Failed to add task dependency.');
         }
-
-        $request->validate([
-            'task_id' => 'required|exists:tasks,id',
-            'depends_on_task_id' => 'required|exists:tasks,id|different:task_id',
-        ]);
-
-        // Check if dependency already exists
-        $existingDependency = TaskDependency::where('task_id', $request->task_id)
-            ->where('depends_on_task_id', $request->depends_on_task_id)
-            ->first();
-
-        if ($existingDependency) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This dependency already exists.'
-            ], 422);
-        }
-
-        // Check for circular dependency
-        if (TaskDependency::wouldCreateCircularDependency($request->task_id, $request->depends_on_task_id)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot add dependency. This would create a circular dependency.'
-            ], 422);
-        }
-
-        $dependency = TaskDependency::create([
-            'task_id' => $request->task_id,
-            'depends_on_task_id' => $request->depends_on_task_id,
-        ]);
-
-        $dependency->load(['task', 'dependsOnTask']);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Task dependency added successfully',
-            'data' => $dependency
-        ], 201);
     }
 
     /**
      * Get all dependencies for a task
+     *
+     * @param string $taskId
+     * @return JsonResponse
      */
-    public function index($taskId)
+    public function index(string $taskId): JsonResponse
     {
-        $user = Auth::user();
-        $task = Task::find($taskId);
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
 
-        if (!$task) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Task not found'
-            ], 404);
+            $task = Task::find($taskId);
+            if (!$task) {
+                return $this->notFoundResponse('Task not found');
+            }
+
+            if (!$this->canUserAccessTask($user, $task)) {
+                return $this->forbiddenResponse('You can only view dependencies for tasks assigned to you.');
+            }
+
+            $dependencies = TaskDependency::where('task_id', $taskId)
+                ->with(['dependsOnTask.assignedUser', 'dependsOnTask.creator'])
+                ->get();
+
+            return $this->successResponse($dependencies);
+        } catch (Throwable $e) {
+            Log::error('Failed to retrieve task dependencies', [
+                'error' => $e->getMessage(),
+                'task_id' => $taskId,
+                'user_id' => $user->id ?? null
+            ]);
+            return $this->serverErrorResponse('Failed to retrieve task dependencies.');
         }
+    }
 
-        // Role-based access: Users can only see dependencies for tasks assigned to them
-        if ($user->isUser() && $task->assigned_to !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. You can only view dependencies for tasks assigned to you.'
-            ], 403);
+    /**
+     * Get all tasks that depend on this task (dependents)
+     *
+     * @param string $taskId
+     * @return JsonResponse
+     */
+    public function dependents(string $taskId): JsonResponse
+    {
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
+
+            $task = Task::find($taskId);
+            if (!$task) {
+                return $this->notFoundResponse('Task not found');
+            }
+
+            if (!$this->canUserAccessTask($user, $task)) {
+                return $this->forbiddenResponse('You can only view dependents for tasks assigned to you.');
+            }
+
+            $dependents = TaskDependency::where('depends_on_task_id', $taskId)
+                ->with(['task.assignedUser', 'task.creator'])
+                ->get();
+
+            return $this->successResponse($dependents);
+        } catch (Throwable $e) {
+            Log::error('Failed to retrieve task dependents', [
+                'error' => $e->getMessage(),
+                'task_id' => $taskId,
+                'user_id' => $user->id ?? null
+            ]);
+            return $this->serverErrorResponse('Failed to retrieve task dependents.');
         }
+    }
 
-        $dependencies = TaskDependency::where('task_id', $taskId)
-            ->with(['dependsOnTask'])
-            ->get();
+    /**
+     * Get dependency graph for a specific task
+     *
+     * @param string $taskId
+     * @return JsonResponse
+     */
+    public function graph(string $taskId): JsonResponse
+    {
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
 
-        return response()->json([
-            'success' => true,
-            'data' => $dependencies
-        ]);
+            $task = Task::with(['assignedUser', 'creator', 'dependencies', 'dependents'])->find($taskId);
+            if (!$task) {
+                return $this->notFoundResponse('Task not found');
+            }
+
+            if (!$this->canUserAccessTask($user, $task)) {
+                return $this->forbiddenResponse('You can only view dependency graph for tasks assigned to you.');
+            }
+
+            return $this->successResponse([
+                'task' => $task,
+                'dependencies' => $task->dependencies,
+                'dependents' => $task->dependents,
+                'can_be_completed' => $task->canBeCompleted()
+            ]);
+        } catch (Throwable $e) {
+            Log::error('Failed to retrieve task dependency graph', [
+                'error' => $e->getMessage(),
+                'task_id' => $taskId,
+                'user_id' => $user->id ?? null
+            ]);
+            return $this->serverErrorResponse('Failed to retrieve dependency graph.');
+        }
     }
 
     /**
      * Remove a dependency from a task
+     *
+     * @param string $dependencyId
+     * @return JsonResponse
      */
-    public function destroy($taskId, $dependencyId)
+    public function destroy(string $dependencyId): JsonResponse
     {
-        $user = Auth::user();
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
 
-        // Only managers can manage task dependencies
-        if (!$user->isManager()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. Only managers can manage task dependencies.'
-            ], 403);
+            if (!$user->isManager()) {
+                return $this->forbiddenResponse('Only managers can manage task dependencies.');
+            }
+
+            $dependency = TaskDependency::find($dependencyId);
+            if (!$dependency) {
+                return $this->notFoundResponse('Task dependency not found');
+            }
+
+            DB::transaction(function () use ($dependency) {
+                $dependency->delete();
+            });
+
+            Log::info('Task dependency removed successfully', [
+                'dependency_id' => $dependencyId,
+                'task_id' => $dependency->task_id,
+                'depends_on_task_id' => $dependency->depends_on_task_id,
+                'removed_by' => $user->id
+            ]);
+
+            return $this->successResponse(null, 'Task dependency removed successfully');
+        } catch (Throwable $e) {
+            Log::error('Failed to remove task dependency', [
+                'error' => $e->getMessage(),
+                'dependency_id' => $dependencyId,
+                'user_id' => $user->id ?? null
+            ]);
+            return $this->serverErrorResponse('Failed to remove task dependency.');
         }
+    }
 
-        $dependency = TaskDependency::where('task_id', $taskId)
-            ->where('depends_on_task_id', $dependencyId)
-            ->first();
+    /**
+     * Clear all dependencies for a task
+     *
+     * @param string $taskId
+     * @return JsonResponse
+     */
+    public function clear(string $taskId): JsonResponse
+    {
+        try {
+            $user = $this->getAuthenticatedUser();
+            if (!$user) {
+                return $this->unauthorizedResponse('User not authenticated');
+            }
 
-        if (!$dependency) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Dependency not found'
-            ], 404);
+            if (!$user->isManager()) {
+                return $this->forbiddenResponse('Only managers can manage task dependencies.');
+            }
+
+            $task = Task::find($taskId);
+            if (!$task) {
+                return $this->notFoundResponse('Task not found');
+            }
+
+            $dependenciesCount = TaskDependency::where('task_id', $taskId)->count();
+
+            DB::transaction(function () use ($taskId) {
+                TaskDependency::where('task_id', $taskId)->delete();
+            });
+
+            Log::info('All task dependencies cleared', [
+                'task_id' => $taskId,
+                'dependencies_removed' => $dependenciesCount,
+                'cleared_by' => $user->id
+            ]);
+
+            return $this->successResponse([
+                'dependencies_removed' => $dependenciesCount
+            ], 'All task dependencies removed successfully');
+        } catch (Throwable $e) {
+            Log::error('Failed to clear task dependencies', [
+                'error' => $e->getMessage(),
+                'task_id' => $taskId,
+                'user_id' => $user->id ?? null
+            ]);
+            return $this->serverErrorResponse('Failed to clear task dependencies.');
         }
+    }
 
-        $dependency->delete();
+    /**
+     * Get the authenticated user
+     *
+     * @return User|null
+     */
+    private function getAuthenticatedUser()
+    {
+        return Auth::user();
+    }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Task dependency removed successfully'
+    /**
+     * Check if the user can access the task
+     *
+     * @param $user
+     * @param Task $task
+     * @return bool
+     */
+    private function canUserAccessTask($user, Task $task): bool
+    {
+        return !($user->isUser() && $task->assigned_to !== $user->id);
+    }
+
+    /**
+     * Validate dependency request data
+     *
+     * @param Request $request
+     * @return array
+     */
+    private function validateDependencyRequest(Request $request): array
+    {
+        return $request->validate([
+            'task_id' => 'required|integer|exists:tasks,id',
+            'depends_on_task_id' => [
+                'required',
+                'integer',
+                'exists:tasks,id',
+                'different:task_id'
+            ],
         ]);
     }
 
     /**
-     * Get all tasks that depend on a specific task
+     * Validate dependency constraints
+     *
+     * @param int $taskId
+     * @param int $dependsOnTaskId
+     * @return JsonResponse|null
      */
-    public function dependents($taskId)
+    private function validateDependencyConstraints(int $taskId, int $dependsOnTaskId): ?JsonResponse
     {
-        $user = Auth::user();
+        // Check if dependency already exists
+        $existingDependency = TaskDependency::where('task_id', $taskId)
+            ->where('depends_on_task_id', $dependsOnTaskId)
+            ->first();
+
+        if ($existingDependency) {
+            return $this->validationErrorResponse('This dependency already exists.');
+        }
+
+        // Check for circular dependency
+        if (TaskDependency::wouldCreateCircularDependency($taskId, $dependsOnTaskId)) {
+            return $this->validationErrorResponse('Cannot add dependency. This would create a circular dependency.');
+        }
+
+        // Validate both tasks exist and are accessible
         $task = Task::find($taskId);
+        $dependsOnTask = Task::find($dependsOnTaskId);
 
-        if (!$task) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Task not found'
-            ], 404);
+        if (!$task || !$dependsOnTask) {
+            return $this->notFoundResponse('One or both tasks not found');
         }
 
-        // Role-based access: Users can only see dependents for tasks assigned to them
-        if ($user->isUser() && $task->assigned_to !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized. You can only view dependents for tasks assigned to you.'
-            ], 403);
+        return null;
+    }
+
+    /**
+     * Build graph nodes for visualization
+     *
+     * @param $dependencies
+     * @return array
+     */
+    private function buildGraphNodes($dependencies): array
+    {
+        $nodes = [];
+        $taskIds = [];
+
+        foreach ($dependencies as $dependency) {
+            if (!in_array($dependency->task_id, $taskIds)) {
+                $nodes[] = [
+                    'id' => $dependency->task_id,
+                    'label' => $dependency->task->title,
+                    'status' => $dependency->task->status
+                ];
+                $taskIds[] = $dependency->task_id;
+            }
+
+            if (!in_array($dependency->depends_on_task_id, $taskIds)) {
+                $nodes[] = [
+                    'id' => $dependency->depends_on_task_id,
+                    'label' => $dependency->dependsOnTask->title,
+                    'status' => $dependency->dependsOnTask->status
+                ];
+                $taskIds[] = $dependency->depends_on_task_id;
+            }
         }
 
-        $dependents = TaskDependency::where('depends_on_task_id', $taskId)
-            ->with(['task'])
-            ->get();
+        return $nodes;
+    }
 
-        return response()->json([
-            'success' => true,
-            'data' => $dependents
-        ]);
+    /**
+     * Build graph edges for visualization
+     *
+     * @param $dependencies
+     * @return array
+     */
+    private function buildGraphEdges($dependencies): array
+    {
+        $edges = [];
+
+        foreach ($dependencies as $dependency) {
+            $edges[] = [
+                'from' => $dependency->depends_on_task_id,
+                'to' => $dependency->task_id,
+                'id' => $dependency->id
+            ];
+        }
+
+        return $edges;
     }
 }
