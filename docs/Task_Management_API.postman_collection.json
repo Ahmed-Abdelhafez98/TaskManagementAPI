@@ -219,7 +219,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{base_url}}/api/tasks?status=pending&assigned_user=3&due_date_from=2025-07-10&due_date_to=2025-07-20&page=1",
+							"raw": "{{base_url}}/api/tasks?status=pending&assigned_user=3&due_date_from=2025-07-10&due_date_to=2025-07-20&search=feature&per_page=10&page=1",
 							"host": [
 								"{{base_url}}"
 							],
@@ -231,7 +231,7 @@
 								{
 									"key": "status",
 									"value": "pending",
-									"description": "Filter by task status (pending, in_progress, completed, canceled)"
+									"description": "Filter by task status (pending, in_progress, completed)"
 								},
 								{
 									"key": "assigned_user",
@@ -247,6 +247,16 @@
 									"key": "due_date_to",
 									"value": "2025-07-20",
 									"description": "End date for due date range filter"
+								},
+								{
+									"key": "search",
+									"value": "feature",
+									"description": "Search in title and description"
+								},
+								{
+									"key": "per_page",
+									"value": "10",
+									"description": "Number of items per page (max 100)"
 								},
 								{
 									"key": "page",
@@ -538,6 +548,64 @@
 					}
 				},
 				{
+					"name": "Clear All Task Dependencies (Manager Only)",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auth_token}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}/dependencies",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"tasks",
+								"{{task_id}}",
+								"dependencies"
+							]
+						},
+						"description": "Clear all dependencies for a task (only managers can manage dependencies)"
+					}
+				},
+				{
+					"name": "Get Task Dependency Graph",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auth_token}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}/graph",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"tasks",
+								"{{task_id}}",
+								"graph"
+							]
+						},
+						"description": "Get dependency graph for a specific task with completion status"
+					}
+				},
+				{
 					"name": "Get Task Dependents",
 					"request": {
 						"method": "GET",
@@ -627,4 +695,3 @@
 		}
 	]
 }
-
