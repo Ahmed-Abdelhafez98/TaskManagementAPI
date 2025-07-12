@@ -52,11 +52,6 @@ docker-compose exec app php artisan migrate:fresh --seed
 
 </details>
 
-## 🌐 Access Your API
-
-- **API Base URL:** `http://localhost:8000/api`
-- **Health Check:** `http://localhost:8000/api/health`
-
 ## 👤 Default Test Users
 
 | Email | Password | Role | Permissions |
