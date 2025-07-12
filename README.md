@@ -80,6 +80,10 @@ docker-compose exec app php artisan migrate:fresh --seed
 
 ## 📖 API Documentation
 
+### Database Schema
+
+**Entity Relationship Diagram (ERD)**: View the complete database schema and relationships in [`docs/ERD.pdf`](docs/ERD.pdf)
+
 ### Postman Collection
 
 A complete Postman collection is available in the `docs/` folder:
