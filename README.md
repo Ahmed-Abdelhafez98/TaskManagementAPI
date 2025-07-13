@@ -83,7 +83,7 @@ docker-compose exec app php artisan migrate:fresh --seed
 
 A complete Postman collection is available in the `docs/` folder:
 
-1. **Import Collection**: Import `docs/Task_Management_API.postman_collection.json` into Postman
+1. **Import Collection**: Import [`docs/Task_Management_API.postman_collection.json`](docs/Task_Management_API.postman_collection.json) into Postman
 2. **Test All Endpoints**: The collection includes all API endpoints with proper authentication
 
 ### API Endpoints
