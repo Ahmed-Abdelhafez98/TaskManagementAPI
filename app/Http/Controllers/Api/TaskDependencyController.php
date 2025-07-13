@@ -195,12 +195,13 @@ class TaskDependencyController extends BaseApiController
     }
 
     /**
-     * Remove a dependency from a task
+     * Remove a specific task dependency
      *
+     * @param string $taskId
      * @param string $dependencyId
      * @return JsonResponse
      */
-    public function destroy(string $dependencyId): JsonResponse
+    public function destroy(string $taskId, string $dependencyId): JsonResponse
     {
         try {
             $user = $this->getAuthenticatedUser();
@@ -212,7 +213,17 @@ class TaskDependencyController extends BaseApiController
                 return $this->forbiddenResponse('Only managers can manage task dependencies.');
             }
 
-            $dependency = TaskDependency::find($dependencyId);
+            // Verify the task exists
+            $task = Task::find($taskId);
+            if (!$task) {
+                return $this->notFoundResponse('Task not found');
+            }
+
+            // Find the dependency that belongs to this task
+            $dependency = TaskDependency::where('task_id', $taskId)
+                                       ->where('id', $dependencyId)
+                                       ->first();
+
             if (!$dependency) {
                 return $this->notFoundResponse('Task dependency not found');
             }
@@ -229,13 +240,14 @@ class TaskDependencyController extends BaseApiController
             ]);
 
             return $this->successResponse(null, 'Task dependency removed successfully');
-        } catch (Throwable $e) {
-            Log::error('Failed to remove task dependency', [
+
+        } catch (Exception $e) {
+            Log::error('Error removing task dependency', [
                 'error' => $e->getMessage(),
-                'dependency_id' => $dependencyId,
-                'user_id' => $user->id ?? null
+                'task_id' => $taskId,
+                'dependency_id' => $dependencyId
             ]);
-            return $this->serverErrorResponse('Failed to remove task dependency.');
+            return $this->errorResponse('Failed to remove task dependency');
         }
     }
 
