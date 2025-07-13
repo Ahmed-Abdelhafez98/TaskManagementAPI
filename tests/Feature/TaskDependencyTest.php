@@ -264,12 +264,12 @@ class TaskDependencyTest extends TestCase
         $task1 = Task::factory()->create(['created_by' => $this->manager->id]);
         $task2 = Task::factory()->create(['created_by' => $this->manager->id]);
 
-        TaskDependency::create([
+        $dependency = TaskDependency::create([
             'task_id' => $task1->id,
             'depends_on_task_id' => $task2->id
         ]);
 
-        $response = $this->deleteJson("/api/tasks/{$task1->id}/dependencies/{$task2->id}");
+        $response = $this->deleteJson("/api/tasks/{$task1->id}/dependencies/{$dependency->id}");
 
         $response->assertStatus(200)
             ->assertJson([
