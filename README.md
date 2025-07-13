@@ -93,7 +93,21 @@ A complete Postman collection is available in the `docs/` folder:
 docker-compose exec app php artisan test
 ```
 
-**Test Coverage:** 45 tests covering authentication, task management, and dependencies.
+**Test Coverage:** 59 tests covering authentication, task management, and dependencies.
+
+## 🔄 Continuous Integration
+
+This project includes automated CI (Continuous Integration) that runs on every push and pull request to ensure code quality and functionality.
+
+### CI Pipeline Features
+
+**Automated Testing Pipeline:**
+- ✅ **Pull Request Validation**: Tests all incoming PRs before merge
+- ✅ **PHP 8.2 Environment**: Latest stable PHP version with required extensions
+- ✅ **MySQL 8.0 Database**: Full database testing with real MySQL instance
+- ✅ **Dependency Caching**: Faster builds with Composer package caching
+- ✅ **Complete Test Suite**: All 59 tests run automatically
+- ✅ **Security Audit**: Composer security vulnerability scanning
 
 ## 🛠️ Development Commands
 
