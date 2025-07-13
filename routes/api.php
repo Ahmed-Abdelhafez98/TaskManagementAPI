@@ -5,6 +5,15 @@ use App\Http\Controllers\Api\TaskController;
 use App\Http\Controllers\Api\TaskDependencyController;
 use Illuminate\Support\Facades\Route;
 
+// Health check endpoint
+Route::get('health', function () {
+    return response()->json([
+        'status' => 'ok',
+        'service' => 'Task Management API',
+        'timestamp' => now()->toISOString()
+    ]);
+});
+
 // Public routes (no authentication required)
 Route::prefix('auth')->group(function () {
     Route::post('login', [AuthController::class, 'login']);
